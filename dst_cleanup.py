@@ -1,63 +1,103 @@
 import pandas as pd
+import os
+import openpyxl
+from openpyxl.worksheet.table import Table
 
+def clean_and_save_data(input_file, output_folder):
+    # Get the base name of the file without extension
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    
+    # Load the workbook
+    workbook = openpyxl.load_workbook(input_file, read_only=True, data_only=True)
+    
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        
+        # Find tables in the sheet
+        tables = [t for t in sheet._tables if isinstance(t, Table)]
+        
+        if not tables:
+            print(f"No table found in sheet '{sheet_name}' of {input_file}")
+            continue
+        
+        for table in tables:
+            # Get the table range
+            table_range = sheet[table.ref]
+            
+            # Extract data from the table
+            data = [[cell.value for cell in row] for row in table_range]
+            
+            # Create DataFrame
+            df = pd.DataFrame(data[1:], columns=data[0])
+            
+            # Check if 'Column1' is in the columns
+            if 'Column1' not in df.columns:
+                print(f"Skipping table in sheet '{sheet_name}' of {input_file} - no 'Column1' found")
+                continue
+            
+            # Rename "Column1" to "Municipality"
+            df.rename(columns={'Column1': 'Municipality'}, inplace=True)
+            
+            # Set "Municipality" as index
+            df.set_index('Municipality', inplace=True)
+            
+            # Drop any rows or columns that are entirely NaN
+            df.dropna(axis=0, how='all', inplace=True)
+            df.dropna(axis=1, how='all', inplace=True)
+            
+            # Convert column names to strings
+            df.columns = df.columns.astype(str)
+            
+            # Convert data to numeric, replacing non-numeric values with NaN
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Special handling for 'forbrydelser.xlsx' (aggregate to yearly data)
+            if 'forbrydelser' in input_file.lower():
+                df = aggregate_quarterly_to_yearly(df)
+            
+            # Create output filename
+            output_file = os.path.join(output_folder, f"{base_name}_{sheet_name}_{table.name}.csv")
+            
+            # Save the cleaned DataFrame to a CSV file
+            df.to_csv(output_file)
+            print(f"Saved {output_file} successfully.")
+    
+    workbook.close()
 
-def clean_and_save_data(input_file, output_file):
-    # Load the Excel file
-    df = pd.read_excel(input_file, skiprows=1)  # Adjust skiprows if needed based on the header position
+def aggregate_quarterly_to_yearly(df):
+    # Identify year and quarter columns
+    year_quarter_cols = [col for col in df.columns if 'K' in col]
     
-    # Specific adjustments based on the input file
-    if input_file == 'dst_data/forbrydelser.xlsx':
-        df.set_index(df.columns[1], inplace=True)
-    elif input_file in ['dst_data/fuldtidsledige.xlsx', 'dst_data/befolkning og indvandre.xlsx']:
-        df.set_index(df.columns[4], inplace=True)
-    elif input_file == 'dst_data/uddannelse.xlsx':
-        df.set_index(df.columns[3], inplace=True)
-    elif input_file == 'dst_data/job.xlsx':
-        df.set_index(df.columns[2], inplace=True)
-    else:  # Default case for other files like 'gnms_alder.xlsx', 'ginikoeff.xlsx', 'kommuneskat.xlsx'
-        df.set_index(df.columns[1], inplace=True)
+    # Create a dictionary to store yearly data
+    yearly_data = {}
     
-    # Drop any rows or columns that are not needed (e.g., rows/columns with NaN in the header)
-    df.dropna(axis=0, how='all', inplace=True)  # Drop rows where all elements are NaN
-    df.dropna(axis=1, how='all', inplace=True)  # Drop columns where all elements are NaN
+    # Group columns by year and sum the quarters
+    for year in set([col.split(' ')[0] for col in year_quarter_cols]):
+        year_cols = [col for col in year_quarter_cols if col.startswith(year)]
+        yearly_data[year] = df[year_cols].sum(axis=1)
     
-    # Rename columns to reflect the correct years (if necessary)
-    df.columns = df.iloc[0]  # Use the first row as header
-    df = df[1:]  # Drop the first row now that it is used as the header
-    
-    # Ensure that the index and columns are correctly set
-    df.index.name = 'Municipality'
-    df.columns.name = 'Year'
-    
-    # Drop the first column that contains NaN values
-    df.drop(columns=[df.columns[0]], inplace=True)
-    
-    # Special handling for 'forbrydelser.xlsx' (renaming columns to represent quarters)
-    if input_file == 'forbrydelser.xlsx':
-        new_columns = []
-        for years in range(0, len(df.columns+1), 4):  # Adjust the range as necessary
-            year = 2007 + years // 4
-            if year == 2024:
-                new_columns.extend([f"{year}-Q1", f"{year}-Q2"])
-            else:
-                new_columns.extend([f"{year}-Q1", f"{year}-Q2", f"{year}-Q3", f"{year}-Q4"])
-        df.columns = new_columns
-    
-    # Save the cleaned DataFrame to a CSV file
-    df.to_csv(output_file)
-    print(f"Saved {output_file} successfully.")
+    # Create a new DataFrame with the yearly data
+    return pd.DataFrame(yearly_data)
 
 if __name__ == "__main__":
     datasets = [
-        ('dst_data/forbrydelser.xlsx', 'data/cleaned_forbrydelser.csv'),
-        ('dst_data/fuldtidsledige.xlsx', 'data/cleaned_fuldtidsledige.csv'),
-        ('dst_data/gnms_alder.xlsx', 'data/cleaned_gnms_alder.csv'),
-        ('dst_data/job.xlsx', 'data/cleaned_job.csv'),
-        ('dst_data/ginikoeff.xlsx', 'data/cleaned_ginikoeff.csv'),
-        ('dst_data/kommuneskat.xlsx', 'data/cleaned_kommuneskat.csv'),
-        ('dst_data/befolkning og indvandre.xlsx', 'data/cleaned_befolkning_og_indvandre.csv'),
-        ('dst_data/uddannelse.xlsx', 'data/cleaned_uddannelse.csv')
+        'dst_data/forbrydelser.xlsx',
+        'dst_data/fuldtidsledige.xlsx',
+        'dst_data/gnms_alder.xlsx',
+        'dst_data/job.xlsx',
+        'dst_data/ginikoeff.xlsx',
+        'dst_data/kommuneskat.xlsx',
+        'dst_data/befolkning og indvandre.xlsx',
+        'dst_data/uddannelse.xlsx'
     ]
+
+    output_folder = 'data/cleaned'
+    os.makedirs(output_folder, exist_ok=True)
+
     # Process and save each dataset
-    for input_file, output_file in datasets:
-        clean_and_save_data(input_file, output_file)
+    for input_file in datasets:
+        try:
+            clean_and_save_data(input_file, output_folder)
+        except Exception as e:
+            print(f"Error processing {input_file}: {str(e)}")
